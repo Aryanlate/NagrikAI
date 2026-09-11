@@ -27,16 +27,17 @@ import {
   Cell,
   CartesianGrid
 } from 'recharts';
-import { fetchTickets, escalateTicket } from '../api/client';
-import { DEPARTMENT_STATS } from '../api/mockData';
+import { fetchTickets, escalateTicket, fetchStats, checkBreaches } from '../api/client';
 import EscalationModal from './EscalationModal';
 
 export default function DashboardView({ setCurrentView }) {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all'); // 'all' | 'on-track' | 'approaching' | 'breached'
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('all');
+  const [departmentStats, setDepartmentStats] = useState([]);
 
   // Sorting state
   const [sortField, setSortField] = useState('createdAt');
@@ -45,17 +46,29 @@ export default function DashboardView({ setCurrentView }) {
   // Escalation modal state
   const [escalatingTicket, setEscalatingTicket] = useState(null);
   const [notification, setNotification] = useState(null);
+  const [loadError, setLoadError] = useState(null);
 
   // Fetch initial dashboard data using useEffect
   const loadData = async () => {
     setLoading(true);
+    setStatsLoading(true);
+    setLoadError(null);
     try {
-      const data = await fetchTickets();
-      setTickets(data);
+      const [ticketData, statsData] = await Promise.all([
+        fetchTickets(),
+        fetchStats().catch((err) => {
+          console.warn('Stats not available:', err.message);
+          return { byDepartment: [], byCategory: [] };
+        }),
+      ]);
+      setTickets(ticketData);
+      setDepartmentStats(statsData.byDepartment || []);
     } catch (err) {
       console.error('Error loading tickets:', err);
+      setLoadError(err.message || 'Failed to load dashboard data.');
     } finally {
       setLoading(false);
+      setStatsLoading(false);
     }
   };
 
@@ -82,19 +95,36 @@ export default function DashboardView({ setCurrentView }) {
 
   // Handle ticket escalation confirmation
   const handleConfirmEscalation = async (ticketId, reason) => {
-    await escalateTicket(ticketId, reason);
-    setTickets((prev) =>
-      prev.map((t) =>
-        t.id === ticketId
-          ? {
-              ...t,
-              escalated: true,
-              statusText: `Escalated to Zonal Authority`,
-            }
-          : t
-      )
-    );
-    triggerToast(`Ticket #${ticketId} escalated successfully with high-priority dispatch!`);
+    try {
+      await escalateTicket(ticketId, reason);
+      setTickets((prev) =>
+        prev.map((t) =>
+          t.id === ticketId || t.ticket_id === ticketId
+            ? {
+                ...t,
+                escalated: true,
+                statusText: `Escalated to Zonal Authority`,
+                escalation_action: reason || 'Escalated to Zonal Authority',
+              }
+            : t
+        )
+      );
+      triggerToast(`Ticket #${ticketId} escalated successfully with high-priority dispatch!`);
+    } catch (err) {
+      console.error('Escalation failed:', err);
+      setNotification(null);
+      triggerToast(`Escalation failed: ${err.message || 'Please try again.'}`);
+    }
+  };
+
+  // Wrapper for refresh button: run breach check + reload data
+  const handleRefresh = async () => {
+    try {
+      await checkBreaches();
+    } catch (err) {
+      console.warn('Breach check note:', err.message);
+    }
+    await loadData();
   };
 
   // Filtered & Sorted rows calculation
@@ -208,11 +238,11 @@ export default function DashboardView({ setCurrentView }) {
         <div className="flex items-center gap-2.5">
           <button
             type="button"
-            onClick={loadData}
-            title="Refresh tickets"
+            onClick={handleRefresh}
+            title="Refresh tickets &amp; run breach check"
             className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold shadow-xs transition-colors"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin text-blue-600' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${(loading || statsLoading) ? 'animate-spin text-blue-600' : ''}`} />
             <span>Refresh</span>
           </button>
 
@@ -314,10 +344,16 @@ export default function DashboardView({ setCurrentView }) {
         </div>
 
         {/* Clean Responsive Bar Chart */}
-        <div className="w-full h-56 pt-2">
+        <div className="w-full h-56 pt-2 relative">
+          {statsLoading && (
+            <div className="absolute inset-0 flex items-center justify-center z-10 bg-white/60 backdrop-blur-[2px]">
+              <RefreshCw className="w-5 h-5 animate-spin text-blue-600 mr-2" />
+              <span className="text-xs text-slate-500 font-medium">Loading analytics…</span>
+            </div>
+          )}
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
-              data={DEPARTMENT_STATS}
+              data={departmentStats.length > 0 ? departmentStats : []}
               margin={{ top: 10, right: 10, left: -20, bottom: 20 }}
             >
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
@@ -331,6 +367,7 @@ export default function DashboardView({ setCurrentView }) {
                 tick={{ fontSize: 11, fill: '#64748b' }}
                 tickLine={false}
                 axisLine={false}
+                allowDecimals={false}
               />
               <Tooltip
                 cursor={{ fill: '#f8fafc' }}
@@ -343,9 +380,11 @@ export default function DashboardView({ setCurrentView }) {
                         <p className="text-blue-300">
                           Complaints: <span className="font-semibold text-white">{data.count}</span>
                         </p>
-                        <p className="text-emerald-400">
-                          SLA Adherence: {data.resolvedRate}%
-                        </p>
+                        {data.resolvedRate && (
+                          <p className="text-emerald-400">
+                            SLA Adherence: {data.resolvedRate}%
+                          </p>
+                        )}
                       </div>
                     );
                   }
@@ -353,14 +392,38 @@ export default function DashboardView({ setCurrentView }) {
                 }}
               />
               <Bar dataKey="count" radius={[6, 6, 0, 0]}>
-                {DEPARTMENT_STATS.map((entry, index) => (
+                {(departmentStats.length > 0 ? departmentStats : []).map((entry, index) => (
                   <Cell key={`cell-${index}`} fill={entry.color || '#2563EB'} />
                 ))}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+          {!statsLoading && departmentStats.length === 0 && (
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="text-xs text-slate-400 font-medium">No department data yet — submit a ticket to populate the chart.</span>
+            </div>
+          )}
         </div>
       </div>
+
+      {/* Load Error Banner */}
+      {loadError && (
+        <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex items-start gap-3">
+          <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <div className="space-y-1 flex-1">
+            <p className="text-xs font-bold text-red-800">Dashboard Load Error</p>
+            <p className="text-xs text-red-700">{loadError}</p>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-xs transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              <span>Retry</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Ticket Table Section */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-0">

@@ -68,8 +68,11 @@ Rules for classification and extraction:
    - Vulnerable people mentioned (elderly, children, sick, disabled)
    - Infrastructure failure that blocks essential services
    Otherwise, use medium for standard complaints, low for minor/non-urgent.
-3. location: Extract address, area name, landmark, street, sector, ward, pincode if mentioned. If NO location is mentioned, use null.
-4. missing_fields: Array of required field names that are missing. For categories in LOCATION_REQUIRED_CATEGORIES, location is mandatory. If the category requires a location and none was provided, include "location" in missing_fields. If all required fields are present, return empty array [].
+3. location: STRICT RULE — Set location = null unless the user EXPLICITLY provides a SPECIFIC place such as: an address, building/house/plot/flat number, area name (e.g. "Koramangala", "Jayanagar"), street name, sector, ward, pincode, or a nearby named landmark (e.g. "near City railway station").
+   - DO NOT use a generic noun phrase like "the road", "the street", "the park", "this area", "my area", "our locality", "nearby", "outside", "at home" as a location value — these are not specific enough to route, treat them as null.
+   - If the complaint only mentions an infrastructure TYPE (e.g. "pothole on the road", "broken streetlight") but gives NO specific place name or address, leave location = null.
+   - Only extract a location value if it directly appears verbatim in the user-provided input text. NEVER invent, assume, or infer a plausible city/area/address.
+4. missing_fields: Array of required field names that are STILL missing after the strict extraction above. For categories in LOCATION_REQUIRED_CATEGORIES, location is mandatory. If the category requires a location and NO specific location was explicitly provided (even if vague place-words appear), include "location" in missing_fields. If all required fields are present, return empty array [].
 5. clarification_question: If missing_fields is non-empty, write a SHORT, polite, specific natural-language question asking for the missing info. Example: "Could you please share the exact address or area where the water supply is cut off?" If missing_fields is empty, use null.
 
 Final output MUST be valid JSON matching this exact schema (no ticket_id, no DB-only fields — those are added later):
@@ -112,7 +115,10 @@ Rules for classification and extraction:
    - Vulnerable people mentioned (elderly, children, sick, disabled)
    - Infrastructure failure that blocks essential services
    Otherwise, use medium for standard complaints, low for minor/non-urgent.
-3. location: Extract address, area name, landmark, street, sector, ward, pincode IF MENTIONED ANYWHERE in the merged text (original complaint OR citizen reply). If NO location is mentioned anywhere, use null.
+3. location: STRICT RULE — Set location = null unless the MERGED text EXPLICITLY provides a SPECIFIC place such as: an address, building/house/plot/flat number, area name (e.g. "Koramangala", "Jayanagar"), street name, sector, ward, pincode, or a nearby named landmark (e.g. "near City railway station").
+   - DO NOT use a generic noun phrase like "the road", "the street", "the park", "this area", "my area", "our locality", "nearby", "outside", "at home" as a location value — these are not specific enough to route, treat them as null.
+   - If the merged text only mentions an infrastructure TYPE (e.g. "pothole on the road", "broken streetlight") but gives NO specific place name or address anywhere, leave location = null.
+   - Only extract a location value if it directly appears verbatim somewhere in the combined text. NEVER invent, assume, or infer a plausible city/area/address.
 4. missing_fields: Array of required field names that are STILL missing after evaluating the ENTIRE merged text. For categories in LOCATION_REQUIRED_CATEGORIES, location is mandatory. If the category requires a location and NONE was provided in EITHER section, include "location" in missing_fields. If all required fields are now present from the merged text, return empty array [].
 5. clarification_question: If missing_fields is STILL non-empty after checking merged text, write a SHORT, polite, specific natural-language question asking for the still-missing info. If missing_fields is empty, use null.
 
@@ -153,20 +159,55 @@ def _find_json_object(text: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _fallback_extract(raw_text: str, reason: str = "") -> Dict[str, Any]:
-    return {
-        "category": "Other",
-        "department": DEPARTMENTS["Other"]["department"],
-        "urgency": "medium",
-        "location": None,
-        "missing_fields": ["location"],
-        "clarification_question": "To help us route your complaint correctly, could you please share the location and a brief description of the issue?",
-        "secondary_issue": None,
-        "_fallback_reason": reason,
-    }
+_VAGUE_LOCATION_PATTERNS = (
+    r"^(the|this|that|my|our|your|a|an|any|some)\s*$",
+    r"^(road|roads|street|streets|area|areas|locality|place|spot|park|neighborhood|neighbourhood|block|zone)\s*$",
+    r"^(nearby|outside|inside|here|there|everywhere|anywhere|somewhere|home|house|office|school|work|hospital|market)$",
+    r"^(city|town|village|country)$",
+)
 
 
-def _normalize_extract_result(parsed: Dict[str, Any], raw_text: str) -> Dict[str, Any]:
+_VAGUE_LOCATION_PHRASES_SUBSTR = (
+    "my place", "my house", "my home", "my area", "my locality", "my street", "my road",
+    "our place", "our house", "our home", "our area", "our locality",
+    "his place", "her place", "their place", "your place",
+    "at my", "at our", "at home", "at office", "at work", "at school", "at hospital",
+    "near me", "near here", "nearby me", "around me", "around here", "there is", "there are",
+    "water supply", "no water", "garbage", "pothole", "street light", "streetlight",
+    "electric", "power cut", "power outage",
+)
+
+
+def _is_vague_location(value: Any) -> bool:
+    if value is None:
+        return True
+    if not isinstance(value, str):
+        return True
+    s = value.strip()
+    if s == "":
+        return True
+    low = s.lower().strip(" .,-!?")
+    if low in ("null", "none", "n/a", "na", "unknown", "not mentioned", "not given", "tbd"):
+        return True
+    if "see raw text" in low or "provided location" in low or "citizen provided" in low:
+        return True
+    for phrase in _VAGUE_LOCATION_PHRASES_SUBSTR:
+        if phrase in low:
+            return True
+    if len(low.split()) <= 1 and re.match(_VAGUE_LOCATION_PATTERNS[0], low):
+        return True
+    for pat in _VAGUE_LOCATION_PATTERNS[1:]:
+        if re.match(pat, low):
+            return True
+    has_any_capital_letter = any(c.isupper() for c in s if c.isalpha())
+    if not has_any_capital_letter and len(low.split()) >= 2:
+        digit_count = sum(1 for c in s if c.isdigit())
+        if digit_count < 3 and not re.search(r"(nagar|colony|layout|park|marg|road|street|avenue|lane|sector|phase|circle|chowk|bazaar|block|ward)\b", low):
+            return True
+    return False
+
+
+def _validate_and_normalize_extraction(parsed: Dict[str, Any], raw_text: str) -> Dict[str, Any]:
     category = parsed.get("category", "Other")
     if category not in DEPARTMENTS:
         category = "Other"
@@ -183,9 +224,11 @@ def _normalize_extract_result(parsed: Dict[str, Any], raw_text: str) -> Dict[str
     location = parsed.get("location")
     if isinstance(location, str):
         location = location.strip()
-        if location.lower() in ("", "null", "none", "n/a", "unknown"):
+        if location == "":
             location = None
     else:
+        location = None
+    if _is_vague_location(location):
         location = None
 
     missing_fields = parsed.get("missing_fields", [])
@@ -196,19 +239,29 @@ def _normalize_extract_result(parsed: Dict[str, Any], raw_text: str) -> Dict[str
     if category in LOCATION_REQUIRED_CATEGORIES and location is None and "location" not in missing_fields:
         missing_fields.append("location")
 
+    seen = set()
+    deduped = []
+    for f in missing_fields:
+        if f not in seen:
+            seen.add(f)
+            deduped.append(f)
+    missing_fields = deduped
+
     clarification_question = parsed.get("clarification_question")
     if not isinstance(clarification_question, str):
         clarification_question = None
+
     if missing_fields and not clarification_question:
         if "location" in missing_fields:
             clarification_question = (
-                "Could you please share the exact location (address, area, or landmark) "
-                "for this complaint so we can route it to the correct team?"
+                "Could you please share the exact location (address, area name, or landmark) "
+                "so we can route this complaint to the correct ward team?"
             )
         else:
             clarification_question = (
                 "Could you please provide a bit more detail so we can assist you better?"
             )
+
     if not missing_fields:
         clarification_question = None
 
@@ -216,7 +269,7 @@ def _normalize_extract_result(parsed: Dict[str, Any], raw_text: str) -> Dict[str
     if not isinstance(secondary_issue, str):
         secondary_issue = None
 
-    return {
+    result: Dict[str, Any] = {
         "category": category,
         "department": department,
         "urgency": urgency,
@@ -225,6 +278,129 @@ def _normalize_extract_result(parsed: Dict[str, Any], raw_text: str) -> Dict[str
         "clarification_question": clarification_question,
         "secondary_issue": secondary_issue,
     }
+
+    try:
+        text_snippet = (raw_text or "").replace("\n", " ")[:120]
+        logger.info(
+            "Parsed JSON after extraction: %s | source_snippet=%r",
+            json.dumps(result, ensure_ascii=False),
+            text_snippet,
+        )
+    except Exception:
+        pass
+
+    return result
+
+
+def _fallback_extract(raw_text: str, reason: str = "") -> Dict[str, Any]:
+    lower_text = (raw_text or "").lower()
+
+    extracted_location: Optional[str] = None
+
+    if isinstance(raw_text, str) and raw_text.strip():
+        reply_section = None
+        if "Additional info from citizen reply:" in raw_text:
+            parts = raw_text.split("Additional info from citizen reply:", 1)
+            if len(parts) == 2:
+                reply_section = parts[1].strip()
+        search_source = reply_section if reply_section else raw_text
+        search_lower = search_source.lower()
+
+        specific_loc_anchors = [
+            "near ", "opposite ", "behind ", "beside ", "next to ",
+            "address", "located at", "in the area of", "around ",
+            "plot no", "plot number", "house no", "house number",
+            "flat no", "h.no", "hno", "h no",
+            "pin code", "pincode", "postal code", "zip code",
+        ]
+        explicit_area_names = [
+            "koregaon park", "jp nagar", "jayanagar", "indiranagar", "koramangala",
+            "hsr layout", "btm layout", "whitefield", "electronic city",
+            "marathahalli", "banashankari", "rajajinagar", "malleswaram",
+            "basavanagudi", "vimanapura", "yeshwantpur", "hebbal",
+            "j p nagar", "jayanagar", "btm", "hsr",
+        ]
+        number_patterns = re.search(
+            r"(\b\d{5,6}\b|\bplot\s*#?\s*\d+|\bhouse\s*#?\s*\d+|\bflat\s*#?\s*\d+)",
+            search_source,
+            re.IGNORECASE,
+        )
+        has_anchor = any(a in search_lower for a in specific_loc_anchors)
+        has_area_name = any(nm in search_lower for nm in explicit_area_names)
+        has_number = bool(number_patterns)
+
+        if has_anchor or has_area_name or has_number:
+            m1 = re.search(
+                r"(?:near|opposite|behind|beside|next to|address|located at|in the area of|around|pin code|pincode)[^\w]*([A-Za-z0-9][^.!?\n]{3,90})",
+                search_source,
+                re.IGNORECASE,
+            )
+            if m1:
+                extracted_location = m1.group(1).strip(" ,.-:;")
+            else:
+                m2 = re.search(
+                    r"((?:[A-Z][a-z]+ ){1,5}(?:Nagar|Colony|Layout|Park|Marg|Road|Street|Avenue|Lane|Sector|Phase|Circle|Chowk|Bazaar|Block|Ward))",
+                    search_source,
+                )
+                if m2:
+                    extracted_location = m2.group(0).strip()
+                elif has_number and number_patterns:
+                    extracted_location = number_patterns.group(0).strip()
+                else:
+                    extracted_location = None
+            if extracted_location and _is_vague_location(extracted_location):
+                extracted_location = None
+
+    category_heuristic = "Other"
+    urgency_heuristic = "medium"
+    if len(lower_text) > 0:
+        if any(w in lower_text for w in ["water", "tap", "supply", "pipe leak", "tank", "sewage", "drain", "overflow"]):
+            if any(w in lower_text for w in ["drain", "sewer", "sewage", "overflow", "choke"]):
+                category_heuristic = "Drainage & Sewage"
+            else:
+                category_heuristic = "Water Supply"
+        elif any(w in lower_text for w in ["electric", "power cut", "power outage", "wire", "cable", "shock", "spark", "transformer", "pole"]):
+            if any(w in lower_text for w in ["street light", "streetlight", "lamp post"]):
+                category_heuristic = "Streetlights"
+            else:
+                category_heuristic = "Electricity"
+        elif any(w in lower_text for w in ["streetlight", "street light", "lamp"]):
+            category_heuristic = "Streetlights"
+        elif any(w in lower_text for w in ["road", "pothol", "speed break", "damaged road", "cracked road", "footpath", "sidewalk"]):
+            category_heuristic = "Roads & Potholes"
+        elif any(w in lower_text for w in ["garbage", "waste", "trash", "dustbin", "litter", "sanitation", "sweeping", "stink", "smell from"]):
+            category_heuristic = "Garbage & Sanitation"
+        elif any(w in lower_text for w in ["safety", "crime", "theft", "accident", "fire", "fight", "harass", "threat", "dangerous", "unsafe"]):
+            category_heuristic = "Public Safety"
+        elif any(w in lower_text for w in ["noise", "loud music", "loud sound", "dj", "speaker", "horn", "public address", "construction noise"]):
+            category_heuristic = "Noise Complaint"
+        elif any(w in lower_text for w in ["illegal construction", "unauthorized construction", "encroachment"]):
+            category_heuristic = "Illegal Construction"
+
+        if any(w in lower_text for w in ["spark", "gas leak", "fire", "falling", "violence", "danger", "emergency", "electrocution", "live wire"]):
+            urgency_heuristic = "high"
+        elif any(w in lower_text for w in ["3 day", "three day", "a week", "since monday", "third time", "complained before", "no one responded", "elderly", "children", "sick person", "disabled"]):
+            urgency_heuristic = "high"
+        elif any(w in lower_text for w in ["urgent", "immediately", "asap", "please hurry"]):
+            urgency_heuristic = "high"
+        elif any(w in lower_text for w in ["minor", "whenever possible", "not urgent", "low priority", "next week"]):
+            urgency_heuristic = "low"
+
+    raw_parsed = {
+        "category": category_heuristic,
+        "department": DEPARTMENTS[category_heuristic]["department"],
+        "urgency": urgency_heuristic,
+        "location": extracted_location,
+        "clarification_question": None,
+        "secondary_issue": None,
+        "_fallback_reason": reason,
+    }
+    return _validate_and_normalize_extraction(raw_parsed, raw_text or "")
+
+
+
+def _normalize_extract_result(parsed: Dict[str, Any], raw_text: str) -> Dict[str, Any]:
+    return _validate_and_normalize_extraction(parsed, raw_text)
 
 
 def _call_gemini_json(system_prompt: str, user_text: str, max_retries: int = 1) -> Dict[str, Any]:

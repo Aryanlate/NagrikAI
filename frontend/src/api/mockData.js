@@ -203,6 +203,7 @@ export const DEPARTMENT_STATS = [
 export const QUICK_PROMPTS = [
   {
     label: "Water Shortage",
+    labelKey: "preset.waterShortage",
     icon: "🚰",
     text: "Severe drinking water shortage in HAL 2nd Stage, Indiranagar. The municipal pipeline has zero pressure since yesterday morning.",
     category: "Water Supply & Sanitation",
@@ -210,6 +211,7 @@ export const QUICK_PROMPTS = [
   },
   {
     label: "Road Pothole Hazard",
+    labelKey: "preset.roadPothole",
     icon: "🚧",
     text: "Large, dangerous pothole near Metro Pillar 142 on Outer Ring Road causing heavy traffic jams and two-wheeler skidding.",
     category: "Roads & Infrastructure",
@@ -217,6 +219,7 @@ export const QUICK_PROMPTS = [
   },
   {
     label: "Streetlights Out",
+    labelKey: "preset.streetlights",
     icon: "💡",
     text: "Entire lane of streetlights not working in HSR Layout Sector 3 for the past 4 nights. Area is completely dark and unsafe.",
     category: "Electricity & Streetlights",
@@ -224,6 +227,7 @@ export const QUICK_PROMPTS = [
   },
   {
     label: "Garbage Dump",
+    labelKey: "preset.garbage",
     icon: "🗑️",
     text: "Overflowing garbage dump and construction debris blocking the footpath outside Community Hall in Koramangala 4th Block.",
     category: "Solid Waste Management",

@@ -61,15 +61,27 @@ def analyze_complaint(req: AnalyzeRequest) -> Dict[str, Any]:
         logger.exception("extract_ticket failed")
         raise HTTPException(status_code=500, detail="Internal error while analyzing complaint.")
 
-    is_complete = len(ticket.get("missing_fields", [])) == 0
+    missing = ticket.get("missing_fields") or []
+    logger.info(
+        "[ANALYZE] parsed JSON: category=%s location=%r missing_fields=%s question=%r",
+        ticket.get("category"),
+        ticket.get("location"),
+        missing,
+        ticket.get("clarification_question"),
+    )
+
+    is_complete = len(missing) == 0
+    logger.info("[ANALYZE] completeness decision: is_complete=%s (len(missing_fields)=%s)", is_complete, len(missing))
     if is_complete:
         try:
             ticket_id = insert_ticket(ticket)
             ticket["ticket_id"] = ticket_id
+            ticket["citizen_response_message"] = generate_citizen_response(ticket)
         except Exception as e:
             logger.exception("insert_ticket failed after analyze")
             raise HTTPException(status_code=500, detail="Internal error while saving ticket.")
 
+    logger.info(f"Final analyze response JSON: {ticket}")
     return ticket
 
 
@@ -82,9 +94,17 @@ def clarify_complaint(req: ClarifyRequest) -> Dict[str, Any]:
         logger.exception("clarify_ticket failed")
         raise HTTPException(status_code=500, detail="Internal error while processing clarification.")
 
-    logger.info(f"Clarify result from ai_engine: {ticket}")
+    missing = ticket.get("missing_fields") or []
+    logger.info(
+        "[CLARIFY] parsed JSON: category=%s location=%r missing_fields=%s question=%r",
+        ticket.get("category"),
+        ticket.get("location"),
+        missing,
+        ticket.get("clarification_question"),
+    )
 
-    is_complete = len(ticket.get("missing_fields", [])) == 0
+    is_complete = len(missing) == 0
+    logger.info("[CLARIFY] completeness decision: is_complete=%s (len(missing_fields)=%s)", is_complete, len(missing))
     if is_complete:
         try:
             ticket_id = insert_ticket(ticket)
@@ -94,6 +114,7 @@ def clarify_complaint(req: ClarifyRequest) -> Dict[str, Any]:
             logger.exception("insert_ticket failed after clarify")
             raise HTTPException(status_code=500, detail="Internal error while saving ticket.")
 
+    logger.info(f"Final clarify response JSON: {ticket}")
     return ticket
 
 
