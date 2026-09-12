@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ArrowUpDown,
   ArrowUp,
@@ -15,7 +15,8 @@ import {
   Inbox,
   HardHat,
   Flame,
-  BarChart3
+  BarChart3,
+  FileQuestion
 } from 'lucide-react';
 import {
   BarChart,
@@ -30,7 +31,49 @@ import {
 import { fetchTickets, escalateTicket, fetchStats, checkBreaches } from '../api/client';
 import EscalationModal from './EscalationModal';
 
-export default function DashboardView({ setCurrentView }) {
+const CLUSTER_BORDER_PALETTE = [
+  'border-fuchsia-500',
+  'border-pink-500',
+  'border-rose-500',
+  'border-orange-500',
+  'border-teal-500',
+  'border-cyan-500',
+  'border-sky-500',
+  'border-violet-500',
+];
+
+function simpleHash(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = ((hash << 5) - hash) + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function getClusterBorderClass(category, location) {
+  const key = `${category || ''}${(location || '').toLowerCase()}`;
+  const hashCode = simpleHash(key);
+  const index = hashCode % CLUSTER_BORDER_PALETTE.length;
+  return CLUSTER_BORDER_PALETTE[index];
+}
+
+function formatLiveCountdown(slaDeadline, breached, nowMs) {
+  const dl = new Date(slaDeadline).getTime();
+  if (isNaN(dl)) return { label: 'Pending', status: 'on-track' };
+  const diffMs = breached ? (nowMs - dl) : (dl - nowMs);
+  const diffHrs = Math.floor(Math.abs(diffMs) / (1000 * 60 * 60));
+  const diffMins = Math.floor((Math.abs(diffMs) % (1000 * 60 * 60)) / (1000 * 60));
+  let status = 'on-track';
+  if (breached || (!breached && diffMs <= 0)) status = 'breached';
+  else if (diffMs <= 2 * 60 * 60 * 1000) status = 'approaching';
+  let label = '';
+  if (status === 'breached') label = `OVERDUE by ${diffHrs}h ${diffMins}m`;
+  else label = `${diffHrs}h ${diffMins}m remaining`;
+  return { label, status };
+}
+
+export default function DashboardView({ setCurrentView, triggerToast }) {
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statsLoading, setStatsLoading] = useState(false);
@@ -38,6 +81,7 @@ export default function DashboardView({ setCurrentView }) {
   const [selectedStatusFilter, setSelectedStatusFilter] = useState('all'); // 'all' | 'on-track' | 'approaching' | 'breached'
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('all');
   const [departmentStats, setDepartmentStats] = useState([]);
+  const [nowTick, setNowTick] = useState(Date.now());
 
   // Sorting state
   const [sortField, setSortField] = useState('createdAt');
@@ -45,8 +89,13 @@ export default function DashboardView({ setCurrentView }) {
 
   // Escalation modal state
   const [escalatingTicket, setEscalatingTicket] = useState(null);
-  const [notification, setNotification] = useState(null);
   const [loadError, setLoadError] = useState(null);
+  const prevTicketIdsRef = useRef(new Set());
+
+  useEffect(() => {
+    const id = setInterval(() => setNowTick(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   // Fetch initial dashboard data using useEffect
   const loadData = async () => {
@@ -61,6 +110,22 @@ export default function DashboardView({ setCurrentView }) {
           return { byDepartment: [], byCategory: [] };
         }),
       ]);
+      if (triggerToast) {
+        const newIds = [];
+        const currentIds = new Set(ticketData.map((t) => t.id));
+        prevTicketIdsRef.current.forEach((id) => {
+          if (!currentIds.has(id)) {
+            // no-op, removed or stale
+          }
+        });
+        ticketData.forEach((t) => {
+          if (!prevTicketIdsRef.current.has(t.id) && prevTicketIdsRef.current.size > 0) {
+            newIds.push(t.id);
+          }
+        });
+        newIds.forEach((id) => triggerToast(`New ticket detected: ${id} 🔔`));
+        prevTicketIdsRef.current = currentIds;
+      }
       setTickets(ticketData);
       setDepartmentStats(statsData.byDepartment || []);
     } catch (err) {
@@ -75,12 +140,6 @@ export default function DashboardView({ setCurrentView }) {
   useEffect(() => {
     loadData();
   }, []);
-
-  // Show temporary toast message
-  const triggerToast = (message) => {
-    setNotification(message);
-    setTimeout(() => setNotification(null), 3500);
-  };
 
   // Sorting handler
   const handleSort = (field) => {
@@ -109,11 +168,10 @@ export default function DashboardView({ setCurrentView }) {
             : t
         )
       );
-      triggerToast(`Ticket #${ticketId} escalated successfully with high-priority dispatch!`);
+      if (triggerToast) triggerToast(`Ticket #${ticketId} escalated successfully with high-priority dispatch!`);
     } catch (err) {
       console.error('Escalation failed:', err);
-      setNotification(null);
-      triggerToast(`Escalation failed: ${err.message || 'Please try again.'}`);
+      if (triggerToast) triggerToast(`Escalation failed: ${err.message || 'Please try again.'}`);
     }
   };
 
@@ -205,14 +263,6 @@ export default function DashboardView({ setCurrentView }) {
           onClose={() => setEscalatingTicket(null)}
           onConfirm={handleConfirmEscalation}
         />
-      )}
-
-      {/* Toast Notification */}
-      {notification && (
-        <div className="fixed top-20 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-slate-700 animate-in fade-in slide-in-from-top-4 duration-200">
-          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-          <span className="text-sm font-medium">{notification}</span>
-        </div>
       )}
 
       {/* Dashboard Top Header Strip */}
@@ -320,9 +370,15 @@ export default function DashboardView({ setCurrentView }) {
               Action Required
             </span>
           </div>
-          <p className="text-[11px] text-red-600 font-semibold mt-1">
-            Escalation triggers active
-          </p>
+          {breachedCount === 0 ? (
+            <p className="text-[11px] text-emerald-700 font-semibold mt-1 flex items-center gap-1">
+              ✅ All tickets within SLA — nothing breached.
+            </p>
+          ) : (
+            <p className="text-[11px] text-red-600 font-semibold mt-1">
+              Escalation triggers active
+            </p>
+          )}
         </div>
       </div>
 
@@ -597,23 +653,46 @@ export default function DashboardView({ setCurrentView }) {
                   </td>
                 </tr>
               ) : processedTickets.length === 0 ? (
-                <tr>
-                  <td colSpan={9} className="py-12 text-center text-slate-500">
-                    No tickets found matching your filters.
-                  </td>
-                </tr>
+                tickets.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-16 text-center">
+                      <Inbox className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+                      <p className="text-sm font-bold text-slate-700 mb-1">
+                        No complaints yet — submissions will appear here.
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        File a citizen grievance to populate this dashboard.
+                      </p>
+                    </td>
+                  </tr>
+                ) : (
+                  <tr>
+                    <td colSpan={9} className="py-12 text-center text-slate-500">
+                      <FileQuestion className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      No tickets match your filters.
+                    </td>
+                  </tr>
+                )
               ) : (
                 processedTickets.map((ticket) => {
                   // STRICT ROW STYLING LOGIC:
                   // Green (`bg-green-50`) = On track
                   // Amber (`bg-yellow-50`) = Approaching deadline
                   // Red (`bg-red-50`) = SLA breached
-                  let rowBgClass = 'bg-green-50 hover:bg-green-100/60 border-l-4 border-green-500';
+                  // Border-l color is driven by category+location cluster hash (visual clustering)
+                  const clusterBorderClass = getClusterBorderClass(ticket.category, ticket.location);
+                  let rowBgClass = `bg-green-50 hover:bg-green-100/60 border-l-4 ${clusterBorderClass}`;
                   if (ticket.slaStatus === 'approaching') {
-                    rowBgClass = 'bg-yellow-50 hover:bg-yellow-100/60 border-l-4 border-amber-500';
+                    rowBgClass = `bg-yellow-50 hover:bg-yellow-100/60 border-l-4 ${clusterBorderClass}`;
                   } else if (ticket.slaStatus === 'breached') {
-                    rowBgClass = 'bg-red-50 hover:bg-red-100/60 border-l-4 border-red-500';
+                    rowBgClass = `bg-red-50 hover:bg-red-100/60 border-l-4 ${clusterBorderClass}`;
                   }
+
+                  const live = formatLiveCountdown(
+                    ticket.slaDeadline,
+                    ticket.breached || ticket.slaStatus === 'breached',
+                    nowTick
+                  );
 
                   return (
                     <tr
@@ -634,6 +713,16 @@ export default function DashboardView({ setCurrentView }) {
                           <span className="text-[11px] text-slate-500 line-clamp-1">
                             {ticket.details}
                           </span>
+                          {ticket.reasoning && (
+                            <span className="text-[11px] text-slate-500 italic line-clamp-1">
+                              {ticket.reasoning}
+                            </span>
+                          )}
+                          {ticket.related_ticket_ids?.length > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 mt-0.5 rounded-full bg-violet-100 text-violet-800">
+                              🔗 {ticket.related_ticket_ids.length} similar complaint{ticket.related_ticket_ids.length === 1 ? '' : 's'} in this area
+                            </span>
+                          )}
                           {ticket.escalated && (
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold text-red-700 mt-0.5">
                               <ShieldAlert className="w-3 h-3" />
@@ -680,22 +769,22 @@ export default function DashboardView({ setCurrentView }) {
                       {/* SLA Status */}
                       <td className="py-3 px-4 whitespace-nowrap">
                         <div className="flex items-center gap-1.5">
-                          {ticket.slaStatus === 'breached' && (
+                          {live.status === 'breached' && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-bold text-red-800 bg-red-100 text-[11px]">
                               <AlertTriangle className="w-3.5 h-3.5 text-red-600" />
-                              {ticket.slaRemaining}
+                              {live.label}
                             </span>
                           )}
-                          {ticket.slaStatus === 'approaching' && (
+                          {live.status === 'approaching' && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-bold text-amber-800 bg-amber-100 text-[11px]">
                               <Clock className="w-3.5 h-3.5 text-amber-600" />
-                              {ticket.slaRemaining}
+                              {live.label}
                             </span>
                           )}
-                          {ticket.slaStatus === 'on-track' && (
+                          {live.status === 'on-track' && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded font-bold text-emerald-800 bg-emerald-100 text-[11px]">
                               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                              {ticket.slaRemaining}
+                              {live.label}
                             </span>
                           )}
                         </div>
@@ -708,7 +797,7 @@ export default function DashboardView({ setCurrentView }) {
 
                       {/* Escalation Action Button */}
                       <td className="py-3 px-4 text-right whitespace-nowrap">
-                        {ticket.slaStatus === 'breached' ? (
+                        {live.status === 'breached' ? (
                           <button
                             type="button"
                             id={`escalate-btn-${ticket.id}`}

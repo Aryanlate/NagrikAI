@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import Navbar from './components/Navbar';
 import CitizenView from './components/CitizenView';
 import DashboardView from './components/DashboardView';
-import { Shield, Sparkles, Building2, Phone, ExternalLink } from 'lucide-react';
+import { Shield, Sparkles, Building2, Phone, ExternalLink, CheckCircle2 } from 'lucide-react';
 import { translate } from './translations';
 
 export default function App() {
@@ -11,8 +11,29 @@ export default function App() {
   const [currentView, setCurrentView] = useState('citizen');
   const [newlyCreatedTicket, setNewlyCreatedTicket] = useState(null);
   const [lang, setLang] = useState('en');
+  const [toast, setToast] = useState(null);
+  const toastTimerRef = useRef(null);
 
   const t = (key) => translate(lang, key);
+
+  const triggerToast = (message) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 4000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
 
   const handleTicketCreated = (ticket) => {
     setNewlyCreatedTicket(ticket);
@@ -20,20 +41,29 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#faf8ff] text-[#131b2e]">
+      {/* Global Toast Notification */}
+      {toast && (
+        <div className="fixed top-20 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-xl shadow-xl flex items-center gap-3 border border-slate-700 animate-in fade-in slide-in-from-top-4 duration-200">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          <span className="text-sm font-medium">{toast}</span>
+        </div>
+      )}
+
       {/* Official Civic Navbar */}
       <Navbar
         currentView={currentView}
         setCurrentView={setCurrentView}
         lang={lang}
         setLang={setLang}
+        triggerToast={triggerToast}
       />
 
       {/* Main Content View Container */}
       <main className="flex-1 w-full">
         {currentView === 'citizen' ? (
-          <CitizenView onTicketCreated={handleTicketCreated} lang={lang} />
+          <CitizenView onTicketCreated={handleTicketCreated} lang={lang} triggerToast={triggerToast} />
         ) : (
-          <DashboardView setCurrentView={setCurrentView} />
+          <DashboardView setCurrentView={setCurrentView} triggerToast={triggerToast} />
         )}
       </main>
 

@@ -137,6 +137,8 @@ function mapBackendTicketToFrontend(backendTicket) {
     breached: !!backendTicket.breached,
     status: backendTicket.status,
     escalation_action: backendTicket.escalation_action,
+    reasoning: backendTicket.reasoning || "Classified based on complaint content.",
+    related_ticket_ids: backendTicket.related_ticket_ids || [],
   };
 }
 

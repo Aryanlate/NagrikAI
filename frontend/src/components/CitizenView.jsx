@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Send,
   Sparkles,
@@ -21,7 +21,7 @@ import { analyzeComplaint, clarifyComplaint } from '../api/client';
 import { QUICK_PROMPTS } from '../api/mockData';
 import { translate } from '../translations';
 
-export default function CitizenView({ onTicketCreated, lang = 'en' }) {
+export default function CitizenView({ onTicketCreated, lang = 'en', triggerToast }) {
   const t = (key) => translate(lang, key);
 
   // State machine: 'idle' | 'loading' | 'clarifying' | 'success'
@@ -38,6 +38,14 @@ export default function CitizenView({ onTicketCreated, lang = 'en' }) {
   const [loadingStage, setLoadingStage] = useState('citizen.loading.stage1');
   const [errorMessage, setErrorMessage] = useState(null);
   const [successMessage, setSuccessMessage] = useState('');
+  const successToastFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (step === 'success' && ticketData && !successToastFiredRef.current && triggerToast) {
+      successToastFiredRef.current = true;
+      triggerToast(`Ticket ${ticketData.id} created ✅`);
+    }
+  }, [step, ticketData, triggerToast]);
 
   // Step 1: Submit initial grievance
   const handleSubmitInitial = async (e) => {
@@ -106,6 +114,7 @@ export default function CitizenView({ onTicketCreated, lang = 'en' }) {
     setCopied(false);
     setErrorMessage(null);
     setSuccessMessage('');
+    successToastFiredRef.current = false;
     setStep('idle');
   };
 
@@ -219,7 +228,7 @@ export default function CitizenView({ onTicketCreated, lang = 'en' }) {
               <button
                 type="submit"
                 id="submit-complaint-btn"
-                disabled={!complaintText.trim()}
+                disabled={!complaintText.trim() || step !== 'idle'}
                 className="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm shadow-md hover:shadow-lg transition-all active:scale-[0.98]"
               >
                 <span>{t('citizen.form.submit')}</span>
@@ -232,21 +241,27 @@ export default function CitizenView({ onTicketCreated, lang = 'en' }) {
         {/* ================= STEP: LOADING ================= */}
         {step === 'loading' && (
           <div className="py-12 px-4 text-center space-y-6">
-            <div className="relative w-16 h-16 mx-auto">
-              <div className="absolute inset-0 rounded-full border-4 border-blue-100"></div>
-              <div className="absolute inset-0 rounded-full border-4 border-blue-600 border-t-transparent animate-spin"></div>
-              <div className="absolute inset-2 rounded-full bg-blue-50 flex items-center justify-center">
-                <Bot className="w-6 h-6 text-blue-600 animate-pulse" />
+            {/* AI Thinking Chat Bubble */}
+            <div className="flex items-start gap-2.5 justify-start max-w-md mx-auto">
+              <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center shrink-0 text-white shadow-xs">
+                <Bot className="w-4 h-4" />
               </div>
-            </div>
-
-            <div className="space-y-2">
-              <h3 className="text-lg font-bold text-slate-900">
-                {t('citizen.loading.title')}
-              </h3>
-              <p className="text-sm text-slate-600 animate-pulse">
-                {t(loadingStage)}
-              </p>
+              <div className="bg-slate-100 border border-slate-200 rounded-2xl rounded-tl-xs p-4 text-slate-800 shadow-xs space-y-2 text-left">
+                <div className="text-[10px] font-bold text-blue-700 uppercase tracking-wider">
+                  NagrikAi Assistant · just now
+                </div>
+                <p className="font-bold text-slate-900 text-sm">
+                  Analyzing your grievance...
+                </p>
+                <p className="text-sm text-slate-600">
+                  {t(loadingStage)}
+                </p>
+                <div className="inline-flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                  <span className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                </div>
+              </div>
             </div>
 
             {/* Skeleton preview bars */}
@@ -354,7 +369,7 @@ export default function CitizenView({ onTicketCreated, lang = 'en' }) {
                 <button
                   type="submit"
                   id="send-clarification-btn"
-                  disabled={!clarificationReply.trim()}
+                  disabled={!clarificationReply.trim() || step !== 'clarifying'}
                   className="px-5 py-3 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold text-sm shadow-md hover:shadow-lg transition-all shrink-0 flex items-center gap-1.5"
                 >
                   <Send className="w-4 h-4" />
@@ -460,6 +475,17 @@ export default function CitizenView({ onTicketCreated, lang = 'en' }) {
                   {t('citizen.success.meta.dispatched')}
                 </span>
               </div>
+            </div>
+
+            {/* Classification Reasoning Block */}
+            <div className="p-3.5 rounded-xl bg-blue-50/60 border border-blue-200 space-y-1.5">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-blue-700 uppercase tracking-wider">
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Why this classification?</span>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-700 leading-relaxed">
+                {ticketData.reasoning || "Classified based on complaint content."}
+              </p>
             </div>
 
             {/* Redressal Progress Track */}

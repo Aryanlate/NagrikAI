@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Dict, Any, List
 
 from fastapi import FastAPI, HTTPException
@@ -12,6 +13,66 @@ from database import (
     update_ticket_status,
     check_and_flag_breaches,
 )
+
+
+_STOPWORDS = {
+    "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "of", "for",
+    "with", "by", "from", "near", "opposite", "behind", "beside", "next", "around",
+    "towards", "above", "below", "inside", "outside", "between", "along", "across",
+    "into", "onto", "upon", "about", "this", "that", "these", "those",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
+    "do", "does", "did", "will", "would", "could", "should", "may", "might",
+    "must", "can", "need", "dare", "ought", "used", "it", "its", "as", "if",
+    "than", "when", "where", "why", "how", "what", "which", "who", "whom",
+    "main", "central", "new", "old", "big", "small", "nearby", "here", "there",
+}
+
+
+def _location_tokens(s: str):
+    s_lower = s.lower()
+    tokens = set(re.findall(r"[a-z0-9]{2,}", s_lower))
+    tokens.difference_update(_STOPWORDS)
+    return tokens
+
+
+def _locations_overlap(loc_a: str, loc_b: str) -> bool:
+    a = loc_a.lower().strip()
+    b = loc_b.lower().strip()
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return True
+    ta = _location_tokens(a)
+    tb = _location_tokens(b)
+    if not ta or not tb:
+        return False
+    shared = ta & tb
+    return len(shared) >= 2
+
+
+def _compute_related_ids_in_memory(
+    target_ticket: Dict[str, Any], all_tickets: List[Dict[str, Any]]
+) -> List[str]:
+    target_id = target_ticket.get("ticket_id")
+    category = target_ticket.get("category") or ""
+    location = target_ticket.get("location")
+    if not location or not isinstance(location, str) or not location.strip():
+        return []
+    related: List[str] = []
+    for t in all_tickets:
+        tid = t.get("ticket_id")
+        if tid is None or tid == target_id:
+            continue
+        if t.get("status") not in ("open", "in_progress"):
+            continue
+        if t.get("category") != category:
+            continue
+        other_loc = t.get("location")
+        if not other_loc or not isinstance(other_loc, str):
+            continue
+        if _locations_overlap(location, other_loc):
+            related.append(str(tid))
+    return related
 from ai_engine import extract_ticket, clarify_ticket, generate_citizen_response
 from models import (
     AnalyzeRequest,
@@ -77,9 +138,13 @@ def analyze_complaint(req: AnalyzeRequest) -> Dict[str, Any]:
             ticket_id = insert_ticket(ticket)
             ticket["ticket_id"] = ticket_id
             ticket["citizen_response_message"] = generate_citizen_response(ticket)
+            all_tickets = get_all_tickets()
+            ticket["related_ticket_ids"] = _compute_related_ids_in_memory(ticket, all_tickets)
         except Exception as e:
             logger.exception("insert_ticket failed after analyze")
             raise HTTPException(status_code=500, detail="Internal error while saving ticket.")
+    else:
+        ticket["related_ticket_ids"] = []
 
     logger.info(f"Final analyze response JSON: {ticket}")
     return ticket
@@ -110,9 +175,13 @@ def clarify_complaint(req: ClarifyRequest) -> Dict[str, Any]:
             ticket_id = insert_ticket(ticket)
             ticket["ticket_id"] = ticket_id
             ticket["citizen_response_message"] = generate_citizen_response(ticket)
+            all_tickets = get_all_tickets()
+            ticket["related_ticket_ids"] = _compute_related_ids_in_memory(ticket, all_tickets)
         except Exception as e:
             logger.exception("insert_ticket failed after clarify")
             raise HTTPException(status_code=500, detail="Internal error while saving ticket.")
+    else:
+        ticket["related_ticket_ids"] = []
 
     logger.info(f"Final clarify response JSON: {ticket}")
     return ticket
@@ -122,6 +191,8 @@ def clarify_complaint(req: ClarifyRequest) -> Dict[str, Any]:
 def list_tickets() -> TicketListResponse:
     try:
         tickets = get_all_tickets()
+        for t in tickets:
+            t["related_ticket_ids"] = _compute_related_ids_in_memory(t, tickets)
     except Exception as e:
         logger.exception("get_all_tickets failed")
         raise HTTPException(status_code=500, detail="Internal error while fetching tickets.")
@@ -131,7 +202,16 @@ def list_tickets() -> TicketListResponse:
 @app.get("/api/tickets/{ticket_id}", response_model=TicketResponse, tags=["Tickets"])
 def get_single_ticket(ticket_id: str) -> Dict[str, Any]:
     try:
-        ticket = get_ticket(ticket_id)
+        all_tickets = get_all_tickets()
+        ticket = None
+        for t in all_tickets:
+            if t.get("ticket_id") == ticket_id:
+                ticket = t
+                break
+        if ticket is None:
+            ticket = get_ticket(ticket_id)
+        if ticket is not None:
+            ticket["related_ticket_ids"] = _compute_related_ids_in_memory(ticket, all_tickets)
     except Exception as e:
         logger.exception(f"get_ticket failed for %s", ticket_id)
         raise HTTPException(status_code=500, detail="Internal error while fetching ticket.")

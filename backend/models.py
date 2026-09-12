@@ -33,6 +33,8 @@ class TicketResponse(BaseModel):
     citizen_response_message: Optional[str] = Field(None, description="Polite confirmation once complete")
     created_at: str = Field(..., description="ISO 8601 creation datetime")
     escalation_action: Optional[str] = Field(None, description="Recommended action if breached")
+    reasoning: Optional[str] = Field(None, description="One-sentence explanation of classification/routing decision")
+    related_ticket_ids: Optional[List[str]] = Field(None, description="IDs of other open tickets with same category and overlapping location.")
 
 
 class TicketListResponse(BaseModel):

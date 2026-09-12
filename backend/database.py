@@ -1,9 +1,12 @@
 import sqlite3
 import json
 import os
+import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 from constants import DEPARTMENTS, LOCATION_REQUIRED_CATEGORIES
+
+logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tickets.db")
 
@@ -33,10 +36,22 @@ def init_db() -> None:
                 clarification_question TEXT,
                 citizen_response_message TEXT,
                 created_at TEXT NOT NULL,
-                escalation_action TEXT
+                escalation_action TEXT,
+                reasoning TEXT
             )
         """)
         conn.commit()
+
+        cursor = conn.execute("PRAGMA table_info(tickets)")
+        existing_cols = {row[1] for row in cursor.fetchall()}
+
+        if "reasoning" not in existing_cols:
+            try:
+                conn.execute("ALTER TABLE tickets ADD COLUMN reasoning TEXT NULL;")
+                conn.commit()
+                logger.info("Added missing 'reasoning' column to tickets table.")
+            except sqlite3.OperationalError as e:
+                logger.warning(f"Failed to add reasoning column (may already exist): {e}")
     finally:
         conn.close()
 
@@ -79,8 +94,8 @@ def insert_ticket(ticket: Dict[str, Any]) -> str:
                 ticket_id, raw_text, category, department, urgency,
                 sla_hours, sla_deadline, status, breached, location,
                 missing_fields, clarification_question, citizen_response_message,
-                created_at, escalation_action
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_at, escalation_action, reasoning
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ticket["ticket_id"],
@@ -98,6 +113,7 @@ def insert_ticket(ticket: Dict[str, Any]) -> str:
                 ticket.get("citizen_response_message"),
                 ticket["created_at"],
                 ticket.get("escalation_action"),
+                ticket.get("reasoning"),
             ),
         )
         conn.commit()
@@ -124,6 +140,34 @@ def get_ticket(ticket_id: str) -> Optional[Dict[str, Any]]:
         return _row_to_dict(row) if row else None
     finally:
         conn.close()
+
+
+def find_related_ticket_ids(
+    conn: sqlite3.Connection,
+    ticket_id: str,
+    category: str,
+    location: Optional[str],
+) -> List[str]:
+    if not location or not isinstance(location, str) or not location.strip():
+        return []
+    loc_lower = location.lower()
+    loc_pattern = f"%{loc_lower}%"
+    try:
+        cursor = conn.execute(
+            """
+            SELECT ticket_id FROM tickets
+            WHERE status IN ('open', 'in_progress')
+              AND ticket_id != ?
+              AND category = ?
+              AND location IS NOT NULL
+              AND (LOWER(location) LIKE ? OR LOWER(?) LIKE LOWER(location))
+            """,
+            (ticket_id, category, loc_pattern, location),
+        )
+        rows = cursor.fetchall()
+        return [str(r["ticket_id"]) for r in rows]
+    except Exception:
+        return []
 
 
 def update_ticket_status(

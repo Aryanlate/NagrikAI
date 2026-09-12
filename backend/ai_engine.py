@@ -74,6 +74,7 @@ Rules for classification and extraction:
    - Only extract a location value if it directly appears verbatim in the user-provided input text. NEVER invent, assume, or infer a plausible city/area/address.
 4. missing_fields: Array of required field names that are STILL missing after the strict extraction above. For categories in LOCATION_REQUIRED_CATEGORIES, location is mandatory. If the category requires a location and NO specific location was explicitly provided (even if vague place-words appear), include "location" in missing_fields. If all required fields are present, return empty array [].
 5. clarification_question: If missing_fields is non-empty, write a SHORT, polite, specific natural-language question asking for the missing info. Example: "Could you please share the exact address or area where the water supply is cut off?" If missing_fields is empty, use null.
+6. reasoning: One short sentence, max 30 words, explaining why this category+urgency+department were chosen, referencing specific keywords or rules from above.
 
 Final output MUST be valid JSON matching this exact schema (no ticket_id, no DB-only fields — those are added later):
 {{
@@ -83,7 +84,8 @@ Final output MUST be valid JSON matching this exact schema (no ticket_id, no DB-
   "location": "string or null",
   "missing_fields": ["field1"],
   "clarification_question": "string or null",
-  "secondary_issue": "string or null"
+  "secondary_issue": "string or null",
+  "reasoning": "short one-sentence plain-language explanation of category, urgency, and routing decision, e.g. 'Routed to Water Supply based on water pipe burst keywords; urgency=high because duration and safety language detected.'"
 }}
 
 Tone handling: If the complaint is sarcastic or vague, infer the REAL underlying problem rather than taking words literally.
@@ -121,6 +123,7 @@ Rules for classification and extraction:
    - Only extract a location value if it directly appears verbatim somewhere in the combined text. NEVER invent, assume, or infer a plausible city/area/address.
 4. missing_fields: Array of required field names that are STILL missing after evaluating the ENTIRE merged text. For categories in LOCATION_REQUIRED_CATEGORIES, location is mandatory. If the category requires a location and NONE was provided in EITHER section, include "location" in missing_fields. If all required fields are now present from the merged text, return empty array [].
 5. clarification_question: If missing_fields is STILL non-empty after checking merged text, write a SHORT, polite, specific natural-language question asking for the still-missing info. If missing_fields is empty, use null.
+6. reasoning: One short sentence, max 30 words, explaining why this category+urgency+department were chosen, referencing specific keywords or rules from above.
 
 Final output MUST be valid JSON matching this exact schema (no ticket_id, no DB-only fields — those are added later):
 {{
@@ -130,7 +133,8 @@ Final output MUST be valid JSON matching this exact schema (no ticket_id, no DB-
   "location": "string or null",
   "missing_fields": ["field1"],
   "clarification_question": "string or null",
-  "secondary_issue": "string or null"
+  "secondary_issue": "string or null",
+  "reasoning": "short one-sentence plain-language explanation of category, urgency, and routing decision, e.g. 'Routed to Water Supply based on water pipe burst keywords; urgency=high because duration and safety language detected.'"
 }}
 
 Tone handling: If the complaint is sarcastic or vague, infer the REAL underlying problem rather than taking words literally.
@@ -269,6 +273,10 @@ def _validate_and_normalize_extraction(parsed: Dict[str, Any], raw_text: str) ->
     if not isinstance(secondary_issue, str):
         secondary_issue = None
 
+    reasoning = parsed.get("reasoning")
+    if not isinstance(reasoning, str) or not reasoning.strip():
+        reasoning = "Classified based on complaint content."
+
     result: Dict[str, Any] = {
         "category": category,
         "department": department,
@@ -277,6 +285,7 @@ def _validate_and_normalize_extraction(parsed: Dict[str, Any], raw_text: str) ->
         "missing_fields": missing_fields,
         "clarification_question": clarification_question,
         "secondary_issue": secondary_issue,
+        "reasoning": reasoning,
     }
 
     try:
@@ -386,6 +395,20 @@ def _fallback_extract(raw_text: str, reason: str = "") -> Dict[str, Any]:
         elif any(w in lower_text for w in ["minor", "whenever possible", "not urgent", "low priority", "next week"]):
             urgency_heuristic = "low"
 
+    if category_heuristic != "Other":
+        category_reason = f"Classified as {category_heuristic} based on complaint keywords."
+    else:
+        category_reason = "Classified based on complaint content."
+
+    if urgency_heuristic == "high":
+        urgency_reason = f" Urgency set to {urgency_heuristic} per duration/escalation/safety language detected."
+    elif urgency_heuristic == "low":
+        urgency_reason = f" Urgency set to {urgency_heuristic} per non-urgent language detected."
+    else:
+        urgency_reason = ""
+
+    reasoning_sentence = (category_reason + urgency_reason).strip()
+
     raw_parsed = {
         "category": category_heuristic,
         "department": DEPARTMENTS[category_heuristic]["department"],
@@ -393,6 +416,7 @@ def _fallback_extract(raw_text: str, reason: str = "") -> Dict[str, Any]:
         "location": extracted_location,
         "clarification_question": None,
         "secondary_issue": None,
+        "reasoning": reasoning_sentence,
         "_fallback_reason": reason,
     }
     return _validate_and_normalize_extraction(raw_parsed, raw_text or "")
@@ -505,6 +529,7 @@ def extract_ticket(text: str) -> Dict[str, Any]:
         "citizen_response_message": None,
         "created_at": created_at,
         "escalation_action": None,
+        "reasoning": parsed["reasoning"],
     }
 
     if is_complete:
@@ -547,6 +572,7 @@ def clarify_ticket(original_text: str, reply: str) -> Dict[str, Any]:
         "citizen_response_message": None,
         "created_at": created_at,
         "escalation_action": None,
+        "reasoning": parsed["reasoning"],
     }
 
     if is_complete:
